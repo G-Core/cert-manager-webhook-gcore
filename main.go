@@ -141,10 +141,42 @@ func (c *gcoreDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
 		return fmt.Errorf("detect zone: %w", err)
 	}
 
-	err = sdk.DeleteRRSet(ctx, zone, fqdn, txtType)
+	// Fetch current RRSet
+	rrset, err := sdk.RRSet(ctx, zone, fqdn, txtType)
 	if err != nil {
-		return fmt.Errorf("delete rrset: %w", err)
+		// RRSet doesn't exist, nothing to clean up
+		return nil
 	}
+
+	// Filter out only the record matching ch.Key
+	var remaining []dnssdk.ResourceRecord
+	for _, record := range rrset.Records {
+		// Check if this record contains the challenge key
+		if len(record.Content) > 0 {
+			if content, ok := record.Content[0].(string); ok && content == ch.Key {
+				// Skip this record (remove it)
+				continue
+			}
+		}
+		remaining = append(remaining, record)
+	}
+
+	// If no records remain, delete the entire RRSet
+	if len(remaining) == 0 {
+		err = sdk.DeleteRRSet(ctx, zone, fqdn, txtType)
+		if err != nil {
+			return fmt.Errorf("delete rrset: %w", err)
+		}
+		return nil
+	}
+
+	// Otherwise, update with remaining records
+	rrset.Records = remaining
+	err = sdk.UpdateRRSet(ctx, zone, fqdn, txtType, rrset)
+	if err != nil {
+		return fmt.Errorf("update rrset: %w", err)
+	}
+
 	return nil
 }
 
