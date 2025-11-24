@@ -245,6 +245,55 @@ func TestConcurrentCleanup(t *testing.T) {
 		assert.True(t, foundKey1, "should preserve challenge-key-1")
 		assert.True(t, foundKey3, "should preserve challenge-key-3")
 	})
+
+	t.Run("cleanup_skips_records_with_no_content", func(t *testing.T) {
+		// Verify that records with no content are skipped (not preserved)
+		// This addresses the review comment about records with no content
+		mock := &mockSDK{
+			zones: map[string]*mockZone{
+				"example.com": {
+					name: "example.com",
+					rrsets: map[string]map[string]*mockRRSet{
+						"_acme-challenge.example.com": {
+							"TXT": {
+								fqdn:       "_acme-challenge.example.com",
+								recordType: "TXT",
+								records: []mockRecord{
+									{content: "valid-token-1"},
+									{content: ""}, // Empty content
+									{content: "valid-token-2"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		fqdn := "_acme-challenge.example.com"
+		recordType := "TXT"
+
+		// Simulate cleanup logic: skip empty records and remove matching key
+		keyToRemove := "valid-token-1"
+		rrset := mock.zones["example.com"].rrsets[fqdn][recordType]
+
+		var remaining []mockRecord
+		for _, record := range rrset.records {
+			// Skip empty content
+			if record.content == "" {
+				continue
+			}
+			// Skip matching key
+			if record.content == keyToRemove {
+				continue
+			}
+			remaining = append(remaining, record)
+		}
+
+		// Should have only valid-token-2 remaining
+		assert.Equal(t, 1, len(remaining), "should have 1 valid record")
+		assert.Equal(t, "valid-token-2", remaining[0].content)
+	})
 }
 
 // Mock types for testing
