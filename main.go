@@ -141,10 +141,58 @@ func (c *gcoreDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
 		return fmt.Errorf("detect zone: %w", err)
 	}
 
-	err = sdk.DeleteRRSet(ctx, zone, fqdn, txtType)
+	// Fetch current RRSet
+	rrset, err := sdk.RRSet(ctx, zone, fqdn, txtType)
 	if err != nil {
-		return fmt.Errorf("delete rrset: %w", err)
+		// Check if it's a 404-like error (RRSet doesn't exist)
+		// For other errors (network, auth, etc.), we should return the error
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+			// RRSet doesn't exist, nothing to clean up
+			return nil
+		}
+		// For other errors, return them
+		return fmt.Errorf("fetch rrset: %w", err)
 	}
+
+	// Filter out only the record matching ch.Key
+	var remaining []dnssdk.ResourceRecord
+	for _, record := range rrset.Records {
+		// Skip records with no content or empty content
+		if len(record.Content) == 0 {
+			continue
+		}
+		
+		// Check if this record contains the challenge key
+		content, ok := record.Content[0].(string)
+		if !ok {
+			// Preserve records with non-string content
+			remaining = append(remaining, record)
+			continue
+		}
+		
+		if content != ch.Key {
+			// Preserve records that don't match the challenge key
+			remaining = append(remaining, record)
+		}
+		// If content == ch.Key, skip this record (remove it)
+	}
+
+	// If no records remain, delete the entire RRSet
+	if len(remaining) == 0 {
+		err = sdk.DeleteRRSet(ctx, zone, fqdn, txtType)
+		if err != nil {
+			return fmt.Errorf("delete rrset: %w", err)
+		}
+		return nil
+	}
+
+	// Otherwise, update with remaining records
+	rrset.Records = remaining
+	err = sdk.UpdateRRSet(ctx, zone, fqdn, txtType, rrset)
+	if err != nil {
+		return fmt.Errorf("update rrset: %w", err)
+	}
+
 	return nil
 }
 
